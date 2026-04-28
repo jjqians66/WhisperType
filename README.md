@@ -1,13 +1,12 @@
 # WhisperType
 
-WhisperType is a blazing fast, native macOS bilingual dictation utility powered by the OpenAI Realtime API and Whisper API. It provides a ChatGPT-style global floating overlay for seamless voice-to-text input across all your macOS applications.
+WhisperType is a blazing fast, native macOS bilingual dictation utility powered by the OpenAI Whisper API. It provides a global floating overlay for seamless voice-to-text input across all your macOS applications with extremely high accuracy and zero translation-hallucinations.
 
 ## Features
 
 - **Global Hotkey Activation**: Press `⌥D` (Option + D) from anywhere in macOS to start dictating.
-- **Two Transcription Engines**:
-  - **Realtime API (Streaming)**: Powered by `gpt-4o-mini-realtime-preview`. Watch words appear word-by-word on a beautiful floating waveform window as you speak. Extremely low latency.
-  - **Whisper REST API (Batch)**: Powered by `whisper-1`. The classic, highly accurate, strict verbatim transcription model.
+- **Pure Whisper Accuracy**: Uses `whisper-1` for highly accurate, strict verbatim transcription without the LLM hallucinations common in streaming APIs.
+- **5-Minute Safety Limit**: Automatically limits recordings to 5 minutes to prevent hitting the 25MB OpenAI API limit. A visual warning appears at 4 minutes and 30 seconds.
 - **Native macOS UI**: Built entirely with SwiftUI and AppKit. Uses a pure background architecture (`LSUIElement`) to prevent stealing keyboard focus from your active apps.
 - **Bilingual & Code-Mixing Friendly**: Intelligently handles mixed Chinese/English speech and preserves technical jargon (e.g., Xcode, LLM, SwiftUI) without unwanted translations.
 - **Auto-Paste**: Automatically types the transcribed text directly into your active text field using native macOS Accessibility (`CGEvent`) simulation.
@@ -45,7 +44,6 @@ On first launch, WhisperType will request **Accessibility** permissions. This is
 
 ## Architecture Highlights
 
-- **Anti-Hallucination Prompts**: When using the Realtime API, GPT-4o naturally acts as an assistant. We use strict `[TRANSCRIPT_START]` marker prefixes and rigorous system prompts to force it into a "verbatim dictation only" mode.
 - **LSUIElement Background Mode**: To simulate pasting into *other* apps, WhisperType runs without a Dock icon or main window, ensuring it never steals the key window focus.
 - **Direct AppKit Key Events**: Bypasses unreliable AppleScript and uses raw `CGEvent` to post keyboard inputs synchronously.
 

@@ -19,13 +19,7 @@ struct MenuBarView: View {
 
             languageSection
 
-            Divider()
-                .padding(.vertical, 4)
 
-            backendSection
-
-            Divider()
-                .padding(.vertical, 4)
 
             // Last transcription
             if !appState.lastTranscription.isEmpty {
@@ -115,21 +109,6 @@ struct MenuBarView: View {
         }
     }
 
-    private var backendSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Backend")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker("Backend", selection: $appState.transcriptionBackend) {
-                ForEach(TranscriptionBackend.allCases) { backend in
-                    Text(backend.displayName).tag(backend)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-        }
-    }
 
     private var lastTranscriptionSection: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -194,7 +173,7 @@ struct MenuBarView: View {
     private var statusText: String {
         switch appState.recordingState {
         case .idle: return "Ready — Press ⌥D to dictate"
-        case .connecting: return "Connecting to OpenAI…"
+        case .connecting: return "Setting up microphone…"
         case .recording: return "Recording… Press ⌥D to stop"
         case .processing: return "Transcribing…"
         }

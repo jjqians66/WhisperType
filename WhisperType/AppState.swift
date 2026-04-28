@@ -1,8 +1,10 @@
 import SwiftUI
 import Combine
+import AVFoundation
+import AppKit
 
 /// Central app state observable by all views.
-/// Manages the recording → streaming → transcription → text insertion flow.
+/// Manages the recording -> transcription -> text insertion flow.
 @MainActor
 class AppState: ObservableObject {
 
@@ -22,15 +24,14 @@ class AppState: ObservableObject {
     @Published var lastTranscription: String = ""
     @Published var errorMessage: String?
     @Published var recordingDuration: TimeInterval = 0
+    @Published var accessibilityGranted: Bool = false
 
     // MARK: - Settings
 
-    @AppStorage("transcriptionBackend") var transcriptionBackend: TranscriptionBackend = .realtime
     @AppStorage("language") var language: String = "auto"
     @AppStorage("showOverlay") var showOverlay: Bool = true
     @AppStorage("launchAtLogin") var launchAtLogin: Bool = false
     @AppStorage("enablePostProcessing") var enablePostProcessing: Bool = false
-    @AppStorage("realtimeModel") var realtimeModel: String = "gpt-4o-mini-realtime-preview"
 
     // MARK: - Services
 
@@ -38,7 +39,6 @@ class AppState: ObservableObject {
     let transcriptionService = TranscriptionService()
     let textInserter = TextInserter()
     let hotKeyManager = HotKeyManager()
-    let realtimeClient = RealtimeClient()
     let textPostProcessor = TextPostProcessor()
 
     // MARK: - Computed
@@ -56,19 +56,32 @@ class AppState: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var recordingTimer: Timer?
+    private var transcriptionTask: Task<Void, Never>?
+    private var targetProcessID: pid_t?
+    private var lastToggleAt: Date = .distantPast
+    private let minimumToggleInterval: TimeInterval = 0.45
 
     init() {
-        checkAccessibilityPermissions()
+        // Check accessibility WITHOUT showing the prompt on every launch.
+        // Only prompt when the user actually tries to use a feature that needs it.
+        accessibilityGranted = AXIsProcessTrusted()
+        
         setupHotKey()
         setupAudioLevelMonitoring()
-        setupRealtimeCallbacks()
     }
     
-    private func checkAccessibilityPermissions() {
-        // This is the ONLY way to force macOS to prompt the user for Accessibility
+    /// Only called when the user explicitly needs accessibility (e.g. first paste attempt)
+    /// or from the Settings UI.
+    func requestAccessibilityPermission() {
         let promptOption = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [promptOption: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        accessibilityGranted = trusted
+    }
+    
+    /// Re-check accessibility status without prompting
+    func recheckAccessibility() {
+        accessibilityGranted = AXIsProcessTrusted()
     }
 
     // MARK: - Setup
@@ -99,110 +112,155 @@ class AppState: ObservableObject {
             .assign(to: &$frequencyBands)
     }
 
-    private func setupRealtimeCallbacks() {
-        realtimeClient.onTextDelta = { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self else { return }
-                var text = self.realtimeClient.streamingText
-                let marker = "[TRANSCRIPT_START]"
-                if text.hasPrefix(marker) {
-                    text = String(text.dropFirst(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                } else if text.hasPrefix("[TRANSCRIPT_") {
-                    text = "" // Hide partial marker
-                }
-                self.streamingText = text
-            }
-        }
-
-        realtimeClient.onResponseDone = { [weak self] finalText in
-            Task { @MainActor in
-                self?.handleTranscriptionComplete(finalText)
-            }
-        }
-
-        realtimeClient.onError = { [weak self] error in
-            Task { @MainActor in
-                self?.errorMessage = error
-                self?.recordingState = .idle
-                self?.stopTimer()
-                self?.audioRecorder.stopRecording()
-            }
-        }
-    }
-
     // MARK: - Actions
 
     func toggleRecording() {
+        let now = Date()
+        guard now.timeIntervalSince(lastToggleAt) >= minimumToggleInterval else {
+            print("WhisperType: Ignoring repeated hotkey")
+            return
+        }
+        lastToggleAt = now
+
         switch recordingState {
         case .idle:
-            startRealtimeRecording()
+            startWhisperRecording()
         case .recording:
-            stopRecordingAndTranscribe()
-        case .connecting, .processing:
-            break
+            stopWhisperRecording()
+        case .connecting:
+            cancelCurrentOperation(reason: "Cancelled")
+        case .processing:
+            cancelCurrentOperation(reason: "Cancelled transcription")
         }
     }
 
-    // MARK: - Realtime Flow
+    // MARK: - Whisper REST Flow
 
-    private func startRealtimeRecording() {
+    private func startWhisperRecording() {
+        print("WhisperType: startWhisperRecording()")
         guard let apiKey = transcriptionService.openAIAPIKey, !apiKey.isEmpty else {
-            errorMessage = "No OpenAI API key. Please set it in Settings."
+            errorMessage = "No OpenAI API key. Press ⌥S to open Settings."
+            print("WhisperType: No API key")
+            return
+        }
+
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            break
+        case .notDetermined:
+            recordingState = .connecting
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if granted {
+                        self.startWhisperRecording()
+                    } else {
+                        self.errorMessage = "Microphone access is required for dictation."
+                        self.recordingState = .idle
+                    }
+                }
+            }
+            return
+        case .denied, .restricted:
+            errorMessage = "Microphone access is required. Enable it in System Settings."
+            return
+        @unknown default:
+            errorMessage = "Unable to determine microphone permission."
             return
         }
 
         errorMessage = nil
-        streamingText = ""
-        recordingState = .connecting
-
-        Task {
-            do {
-                // 1. Connect to OpenAI Realtime API
-                try await realtimeClient.connect(apiKey: apiKey, model: realtimeModel)
-
-                // 2. Wire audio recorder → realtime client
-                audioRecorder.onAudioChunk = { [weak self] chunk in
-                    Task {
-                        try? await self?.realtimeClient.sendAudio(chunk)
-                    }
-                }
-
-                // 3. Start recording
-                try audioRecorder.startRecording()
-                recordingState = .recording
-                startTimer()
-
-            } catch {
-                errorMessage = "Failed to start: \(error.localizedDescription)"
-                recordingState = .idle
-                await realtimeClient.disconnect()
-            }
+        targetProcessID = captureTargetProcessID()
+        recordingState = .recording
+        
+        do {
+            try audioRecorder.startRecording()
+            startTimer()
+            print("WhisperType: Recording started successfully")
+        } catch {
+            errorMessage = "Failed to start mic: \(error.localizedDescription)"
+            print("WhisperType: Mic start failed: \(error)")
+            recordingState = .idle
         }
     }
 
-    private func stopRecordingAndTranscribe() {
+    private func stopWhisperRecording() {
+        print("WhisperType: stopWhisperRecording()")
         guard recordingState == .recording else { return }
-
-        // Stop recording
+        
         audioRecorder.stopRecording()
-        audioRecorder.onAudioChunk = nil
         stopTimer()
         recordingState = .processing
-
-        Task {
+        streamingText = "Transcribing..."
+        
+        guard let pcmData = try? audioRecorder.getAudioData() else {
+            errorMessage = "Failed to process audio"
+            print("WhisperType: Failed to get audio data from recorder")
+            recordingState = .idle
+            return
+        }
+        
+        print("WhisperType: Got \(pcmData.count) bytes of audio data")
+        
+        // Convert to WAV for Whisper API
+        let wavData = createWAVHeader(data: pcmData, sampleRate: 24000, channels: 1) + pcmData
+        let targetPID = targetProcessID
+        print("WhisperType: WAV data size: \(wavData.count) bytes")
+        
+        transcriptionTask?.cancel()
+        transcriptionTask = Task { [weak self, wavData, targetPID] in
+            guard let self else { return }
             do {
-                // Commit audio and request transcription
-                try await realtimeClient.commitAndRespond()
-                // Response will arrive via onResponseDone callback
+                let languageToPass = await MainActor.run { (self.language == "auto") ? nil : self.language }
+                print("WhisperType: Calling Whisper API with language: \(languageToPass ?? "auto")")
+                let text = try await self.transcriptionService.transcribeWithWhisperAPI(audioData: wavData, language: languageToPass)
+                guard !Task.isCancelled else { return }
+                
+                print("WhisperType: Whisper API returned \(text.count) characters: \(text)")
+                await self.handleTranscriptionComplete(text, targetProcessID: targetPID)
             } catch {
-                errorMessage = "Transcription failed: \(error.localizedDescription)"
-                recordingState = .idle
-                await realtimeClient.disconnect()
+                guard !Task.isCancelled else { return }
+                print("WhisperType: Whisper API error: \(error)")
+                await MainActor.run {
+                    self.errorMessage = "Whisper API failed: \(error.localizedDescription)"
+                    self.recordingState = .idle
+                    self.streamingText = ""
+                    self.transcriptionTask = nil
+                    self.targetProcessID = nil
+                }
             }
         }
     }
+    
+    private func createWAVHeader(data: Data, sampleRate: Int, channels: Int) -> Data {
+        let byteRate = sampleRate * channels * 2
+        var header = Data()
+        header.append(contentsOf: "RIFF".utf8)
+        var chunkSize = UInt32(36 + data.count).littleEndian
+        header.append(Data(bytes: &chunkSize, count: 4))
+        header.append(contentsOf: "WAVE".utf8)
+        header.append(contentsOf: "fmt ".utf8)
+        var subchunk1Size = UInt32(16).littleEndian
+        header.append(Data(bytes: &subchunk1Size, count: 4))
+        var audioFormat = UInt16(1).littleEndian
+        header.append(Data(bytes: &audioFormat, count: 2))
+        var numChannels = UInt16(channels).littleEndian
+        header.append(Data(bytes: &numChannels, count: 2))
+        var sampleRate32 = UInt32(sampleRate).littleEndian
+        header.append(Data(bytes: &sampleRate32, count: 4))
+        var byteRate32 = UInt32(byteRate).littleEndian
+        header.append(Data(bytes: &byteRate32, count: 4))
+        var blockAlign = UInt16(channels * 2).littleEndian
+        header.append(Data(bytes: &blockAlign, count: 2))
+        var bitsPerSample = UInt16(16).littleEndian
+        header.append(Data(bytes: &bitsPerSample, count: 2))
+        header.append(contentsOf: "data".utf8)
+        var subchunk2Size = UInt32(data.count).littleEndian
+        header.append(Data(bytes: &subchunk2Size, count: 4))
+        return header
+    }
 
-    private func handleTranscriptionComplete(_ text: String) {
+    private func handleTranscriptionComplete(_ text: String, targetProcessID: pid_t?) async {
         var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Remove the anti-hallucination marker prefix if present
@@ -214,45 +272,109 @@ class AppState: ObservableObject {
         guard !trimmed.isEmpty else {
             errorMessage = "No speech detected"
             recordingState = .idle
-            Task { await realtimeClient.disconnect() }
+            streamingText = ""
+            transcriptionTask = nil
+            self.targetProcessID = nil
             return
         }
 
-        Task {
-            var finalText = trimmed
+        var finalText = trimmed
 
-            // Optional LLM post-processing
-            if enablePostProcessing,
-               let apiKey = transcriptionService.openAIAPIKey {
-                do {
-                    finalText = try await textPostProcessor.enhance(trimmed, apiKey: apiKey)
-                } catch {
-                    // Fall back to raw transcription on error
-                    errorMessage = "Enhancement failed, using raw transcription"
-                }
+        // Optional LLM post-processing
+        if enablePostProcessing,
+           let apiKey = transcriptionService.openAIAPIKey {
+            do {
+                finalText = try await textPostProcessor.enhance(trimmed, apiKey: apiKey)
+            } catch {
+                // Fall back to raw transcription on error
+                errorMessage = "Enhancement failed, using raw transcription"
             }
-
-            lastTranscription = finalText
-            textInserter.insertText(finalText)
-            recordingState = .idle
-            await realtimeClient.disconnect()
         }
+
+        guard !Task.isCancelled else { return }
+
+        lastTranscription = finalText
+        streamingText = finalText
+        
+        // Re-check accessibility right before paste attempt
+        recheckAccessibility()
+        
+        if accessibilityGranted {
+            let pasteRequested = textInserter.insertText(finalText, targetProcessID: targetProcessID)
+            if !pasteRequested {
+                // This shouldn't happen if AXIsProcessTrusted() was true, but handle gracefully
+                errorMessage = "Text copied to clipboard. Press ⌘V to paste."
+            }
+        } else {
+            // Text is already on the clipboard from insertText's first step
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(finalText, forType: .string)
+            errorMessage = "Text copied to clipboard. Grant Accessibility in System Settings for auto-paste."
+            // Prompt for accessibility on first failure
+            requestAccessibilityPermission()
+        }
+        
+        recordingState = .idle
+        transcriptionTask = nil
+        self.targetProcessID = nil
     }
 
-    // MARK: - Timer
+    // MARK: - Timer & Limits
 
     private func startTimer() {
         recordingDuration = 0
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        updateStreamingTextForTimer()
+        
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.recordingDuration += 0.1
+                guard let self = self else { return }
+                self.recordingDuration += 1.0
+                self.updateStreamingTextForTimer()
+                
+                // Hard limit at 5 minutes (300 seconds)
+                if self.recordingDuration >= 300 {
+                    self.stopWhisperRecording()
+                }
             }
+        }
+    }
+    
+    private func updateStreamingTextForTimer() {
+        let remaining = 300 - Int(recordingDuration)
+        let mins = Int(recordingDuration) / 60
+        let secs = Int(recordingDuration) % 60
+        let timeStr = String(format: "%d:%02d", mins, secs)
+        
+        if remaining <= 30 {
+            streamingText = "⚠️ \(timeStr) / 5:00 (Auto-stopping in \(remaining)s)"
+        } else {
+            streamingText = "Recording... \(timeStr) / 5:00"
         }
     }
 
     private func stopTimer() {
         recordingTimer?.invalidate()
         recordingTimer = nil
+    }
+
+    private func cancelCurrentOperation(reason: String) {
+        transcriptionTask?.cancel()
+        transcriptionTask = nil
+        audioRecorder.stopRecording()
+        stopTimer()
+        targetProcessID = nil
+        errorMessage = reason
+        streamingText = ""
+        recordingState = .idle
+    }
+
+    private func captureTargetProcessID() -> pid_t? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        guard app.processIdentifier != currentPID else { return nil }
+        print("WhisperType: Target app = \(app.localizedName ?? "unknown") pid=\(app.processIdentifier)")
+        return app.processIdentifier
     }
 }
 

@@ -64,14 +64,44 @@ struct GeneralSettingsTab: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Accessibility Access")
                             .font(.body)
-                        Text("Required for global hotkey and text paste")
+                        Text("Required for auto-paste into text fields")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Open Settings") {
+                    
+                    if appState.accessibilityGranted {
+                        Label("Granted", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    } else {
+                        Label("Not Granted", systemImage: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                }
+                
+                HStack {
+                    Button("Request Permission") {
+                        appState.requestAccessibilityPermission()
+                    }
+                    
+                    Button("Refresh Status") {
+                        appState.recheckAccessibility()
+                    }
+                    
+                    Spacer()
+                    
+                    Button("Open System Settings") {
                         openAccessibilitySettings()
                     }
+                }
+                .buttonStyle(.link)
+                
+                if !appState.accessibilityGranted {
+                    Text("⚠️ Without Accessibility, transcribed text will be copied to clipboard. You'll need to manually ⌘V to paste.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
         }
@@ -110,21 +140,25 @@ struct TranscriptionSettingsTab: View {
 
     var body: some View {
         Form {
-            Section("Backend") {
-                Picker("Transcription Engine", selection: $appState.transcriptionBackend) {
-                    ForEach(TranscriptionBackend.allCases) { backend in
-                        VStack(alignment: .leading) {
-                            Text(backend.displayName)
-                            Text(backend.description)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            Section("General") {
+                Toggle("Launch at Login", isOn: $appState.launchAtLogin)
+                    .onChange(of: appState.launchAtLogin) { _, newValue in
+                        do {
+                            if newValue {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                        } catch {
+                            print("Failed to update Launch at Login: \\(error)")
                         }
-                        .tag(backend)
                     }
-                }
-                .pickerStyle(.radioGroup)
+                
+                Text("Start WhisperType automatically when you turn on your Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-
+            
             Section("OpenAI API Key") {
                 HStack {
                     if showAPIKey {
@@ -157,21 +191,9 @@ struct TranscriptionSettingsTab: View {
                         .foregroundStyle(.green)
                 }
 
-                Text("Used for both Realtime and Whisper APIs. Stored in macOS Keychain.")
+                Text("Used for OpenAI Whisper API. Stored securely in macOS Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            if appState.transcriptionBackend == .realtime {
-                Section("Realtime Model") {
-                    Picker("Model", selection: $appState.realtimeModel) {
-                        Text("GPT-4o Mini Realtime (Fast, Cheaper)")
-                            .tag("gpt-4o-mini-realtime-preview")
-                        Text("GPT-4o Realtime (Best Quality)")
-                            .tag("gpt-4o-realtime-preview")
-                    }
-                    .pickerStyle(.radioGroup)
-                }
             }
 
             Section("Language") {
@@ -225,7 +247,7 @@ struct AboutTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("Real-time speech-to-text powered by OpenAI.\nSupports Chinese, English, and 90+ languages.")
+            Text("High-accuracy voice dictation powered by OpenAI Whisper.\nMaximum 5 minutes per recording.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -235,7 +257,7 @@ struct AboutTab: View {
                 .frame(width: 200)
 
             VStack(spacing: 4) {
-                Text("Powered by OpenAI Realtime API")
+                Text("Powered by OpenAI Whisper API")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Built with SwiftUI")

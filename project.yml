@@ -31,6 +31,7 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         ENABLE_APP_SANDBOX: false
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        LSUIElement: true
     dependencies:
       - package: HotKey
       - package: KeychainAccess

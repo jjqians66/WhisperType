@@ -1,8 +1,7 @@
 import Foundation
 import KeychainAccess
 
-/// Manages API keys and provides the OpenAI Whisper REST API fallback.
-/// The Realtime streaming flow is handled by RealtimeClient + AppState directly.
+/// Manages API keys and provides OpenAI Whisper REST API transcription.
 class TranscriptionService {
     private let keychain = Keychain(service: "com.whispertype.app")
     private let session = URLSession.shared
@@ -77,28 +76,7 @@ class TranscriptionService {
     }
 }
 
-// MARK: - TranscriptionBackend Enum
 
-enum TranscriptionBackend: String, CaseIterable, Identifiable {
-    case realtime = "realtime"
-    case whisperREST = "whisperREST"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .realtime: return "OpenAI Realtime (Streaming)"
-        case .whisperREST: return "OpenAI Whisper (Batch)"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .realtime: return "Real-time streaming transcription with LLM cleanup"
-        case .whisperREST: return "Record first, then transcribe in one batch"
-        }
-    }
-}
 
 // MARK: - Errors
 
