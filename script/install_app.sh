@@ -8,7 +8,7 @@ SCHEME="WhisperType"
 CONFIGURATION="Release"
 DERIVED_DATA="$ROOT_DIR/build/InstallDerivedData"
 SOURCE_APP="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
-DEST_DIR="$HOME/Applications"
+DEST_DIR="/Applications"
 DEST_APP="$DEST_DIR/$APP_NAME.app"
 
 xcodebuild \

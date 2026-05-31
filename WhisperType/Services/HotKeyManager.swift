@@ -7,11 +7,13 @@ import Carbon
 class HotKeyManager {
     private var hotKey: HotKey?
     private var settingsHotKey: HotKey?
+    private var isRecordHotKeyDown = false
+    private var isSettingsHotKeyDown = false
 
-    /// Called when the record hotkey is pressed
+    /// Called once when the record hotkey is released.
     var onToggle: (() -> Void)?
     
-    /// Called when the settings hotkey is pressed
+    /// Called once when the settings hotkey is released.
     var onSettings: (() -> Void)?
 
     init() {
@@ -23,22 +25,38 @@ class HotKeyManager {
         // Record HotKey: ⌥D
         hotKey = HotKey(key: .d, modifiers: [.option])
         hotKey?.keyDownHandler = { [weak self] in
-            self?.onToggle?()
+            self?.isRecordHotKeyDown = true
+        }
+        hotKey?.keyUpHandler = { [weak self] in
+            guard let self, self.isRecordHotKeyDown else { return }
+            self.isRecordHotKeyDown = false
+            self.onToggle?()
         }
         
         // Settings HotKey: ⌥S
         settingsHotKey = HotKey(key: .s, modifiers: [.option])
         settingsHotKey?.keyDownHandler = { [weak self] in
-            self?.onSettings?()
+            self?.isSettingsHotKeyDown = true
+        }
+        settingsHotKey?.keyUpHandler = { [weak self] in
+            guard let self, self.isSettingsHotKeyDown else { return }
+            self.isSettingsHotKeyDown = false
+            self.onSettings?()
         }
     }
 
     /// Update the hotkey combination
     func updateHotKey(key: Key, modifiers: NSEvent.ModifierFlags) {
         hotKey = nil
+        isRecordHotKeyDown = false
         hotKey = HotKey(key: key, modifiers: modifiers)
         hotKey?.keyDownHandler = { [weak self] in
-            self?.onToggle?()
+            self?.isRecordHotKeyDown = true
+        }
+        hotKey?.keyUpHandler = { [weak self] in
+            guard let self, self.isRecordHotKeyDown else { return }
+            self.isRecordHotKeyDown = false
+            self.onToggle?()
         }
     }
 

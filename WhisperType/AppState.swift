@@ -306,13 +306,10 @@ class AppState: ObservableObject {
                 errorMessage = "Text copied to clipboard. Press ⌘V to paste."
             }
         } else {
-            // Text is already on the clipboard from insertText's first step
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(finalText, forType: .string)
             errorMessage = "Text copied to clipboard. Grant Accessibility in System Settings for auto-paste."
-            // Prompt for accessibility on first failure
-            requestAccessibilityPermission()
         }
         
         recordingState = .idle
